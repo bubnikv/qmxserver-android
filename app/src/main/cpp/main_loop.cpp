@@ -161,6 +161,8 @@ static void cb_xfr(struct libusb_transfer *xfr)
 			LOGD("Error (status %d: %s) :", pack->status, libusb_error_name(pack->status));
 			exit(1);
 	    }
+        if (pack->actual_length <= 0)
+            continue;
 	    const uint8_t *data = libusb_get_iso_packet_buffer_simple(xfr, ipacket);
 #if 0
 		for (int len = pack->length;;) {
@@ -178,18 +180,18 @@ static void cb_xfr(struct libusb_transfer *xfr)
 			}
 		}
 #else
-		assert((pack->length % 6) == 0);
-		for (int len = pack->length / 6;;) {
+		assert((pack->actual_length % 6) == 0);
+		for (int len = pack->actual_length / 6;;) {
 			if (data_buffer_len + len >= EXT_BLOCKLEN) {
 				int num_copy = EXT_BLOCKLEN - data_buffer_len;
 				for (int i = 0; i < num_copy; ++ i) {
 					int j = 4 * (data_buffer_len + i);
 					data ++; // skip LSB
-					data_buffer[j ++] = *data ++;
-					data_buffer[j ++] = *data ++;
+					data_buffer[j + 2] = *data ++;
+					data_buffer[j + 3] = *data ++;
 					data ++; // skip LSB
-					data_buffer[j ++] = *data ++;
-					data_buffer[j ++] = *data ++;
+					data_buffer[j + 0] = *data ++;
+					data_buffer[j + 1] = *data ++;
 				}
 				receive_callback(EXT_BLOCKLEN, 0, 0.f, (void*)data_buffer);
 				len -= num_copy;
@@ -198,11 +200,11 @@ static void cb_xfr(struct libusb_transfer *xfr)
 				for (int i = 0; i < len; ++ i) {
 					int j = 4 * (data_buffer_len + i);
 					data ++; // skip LSB
-					data_buffer[j ++] = *data ++;
-					data_buffer[j ++] = *data ++;
+					data_buffer[j + 2] = *data ++;
+					data_buffer[j + 3] = *data ++;
 					data ++; // skip LSB
-					data_buffer[j ++] = *data ++;
-					data_buffer[j ++] = *data ++;
+					data_buffer[j + 0] = *data ++;
+					data_buffer[j + 1] = *data ++;
 				}
 				data_buffer_len += len;
 				break;
@@ -309,7 +311,11 @@ int main_loop(int fd, const std::string &device_path)
 	printf("Product Name: %s\n", std::string(detected.product_name).c_str());
 	printf("Serial No: %s\n",	 detected.serial_number.c_str());
 
-	for (int iface : { 0, 1, IFACE_NUM }) {
+    // 1: CDC
+    // 2: Audio control
+    // 2: Audio in
+    // 3: Audio out
+	for (int iface : { 0, 1, 2, 3, 4 }) {
 #ifndef _WIN32
 		rc = libusb_kernel_driver_active(dev_handle, iface);
 		if (rc < 0) {
