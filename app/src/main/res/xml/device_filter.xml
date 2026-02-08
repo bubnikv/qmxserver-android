@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- "www.obdev.at" -->
+    <usb-device vendor-id="0x16C0" product-id="0x05DC" />
+    <!-- STMicroelectronics VID, QRP Labs QMX Transceiver PID -->
+    <usb-device vendor-id="0x0483" product-id="0xA34C" />
+</resources>
