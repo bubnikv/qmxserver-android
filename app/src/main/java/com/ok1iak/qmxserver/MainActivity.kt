@@ -1,15 +1,20 @@
 package com.ok1iak.qmxserver
 
+import android.Manifest
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.os.Build
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.util.Log
 import android.widget.TextView
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.ok1iak.qmxserver.databinding.ActivityMainBinding
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -20,6 +25,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val ACTION_USB_PERMISSION = "com.ok1iak.qmxserver.USB_PERMISSION"
+        private const val REQUEST_NOTIFICATION_PERMISSION = 100
+        
         // Used to load the 'qmxserver' library on application startup.
         init {
             System.loadLibrary("qmxserver")
@@ -58,6 +65,19 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        
+        // Request notification permission for Android 13+ (needed for foreground service)
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    REQUEST_NOTIFICATION_PERMISSION
+                )
+            }
+        }
+        
         // Example of a call to a native method
         binding.sampleText.text = stringFromJNI()
 
@@ -68,7 +88,12 @@ class MainActivity : AppCompatActivity() {
         val usbManager = getSystemService(UsbManager::class.java)
 
         // Optional: if launched by USB attach intent, use that device
-        val attachedDevice = intent?.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+        val attachedDevice = if (Build.VERSION.SDK_INT >= 33) {
+            intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        }
         val device = attachedDevice ?: usbManager.deviceList.values.firstOrNull()
 
         if (device == null) {
@@ -81,18 +106,34 @@ class MainActivity : AppCompatActivity() {
         val permissionIntent = PendingIntent.getBroadcast(this, 0, Intent(ACTION_USB_PERMISSION), flags)
 
         // Register receiver dynamically (keeps manifest simpler for modern Android)
-        registerReceiver(
-            UsbPermissionReceiver(),
-            IntentFilter(ACTION_USB_PERMISSION),
-            Context.RECEIVER_NOT_EXPORTED  // Add this flag
-        )
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            // Android 13+
+            registerReceiver(
+                UsbPermissionReceiver(),
+                IntentFilter(ACTION_USB_PERMISSION),
+                Context.RECEIVER_NOT_EXPORTED  // Add this flag
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(
+                UsbPermissionReceiver(),
+                IntentFilter(ACTION_USB_PERMISSION)
+            )
+        }
 
         // Setup button listeners
         binding.startButton.setOnClickListener {
             if (usbManager.hasPermission(device)) {
-                startForegroundService(Intent(this, UsbForegroundService::class.java).apply {
+                val serviceIntent = Intent(this, UsbForegroundService::class.java).apply {
                     putExtra(UsbManager.EXTRA_DEVICE, device)
-                })
+                }
+                // Use startForegroundService() on Android 8+ (API 26+)
+                if (Build.VERSION.SDK_INT >= 26) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    startService(serviceIntent)
+                }
                 binding.startButton.isEnabled = false
                 binding.stopButton.isEnabled = true
             } else {

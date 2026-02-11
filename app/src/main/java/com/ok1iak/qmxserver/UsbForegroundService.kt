@@ -28,7 +28,12 @@ class UsbForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val usbManager = getSystemService(UsbManager::class.java)
-        val device = intent?.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+        val device = if (Build.VERSION.SDK_INT >= 33) {
+            intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        }
         if (device == null) return START_NOT_STICKY
 
         val connection = usbManager.openDevice(device)
