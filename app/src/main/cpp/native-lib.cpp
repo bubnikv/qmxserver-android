@@ -9,7 +9,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "QMXServer", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "QMXServer", __VA_ARGS__)
 
-static std::atomic<bool> g_run{false};
+std::atomic<bool> g_run{false};
 static std::thread g_thread;
 
 int main_loop(int fd, const std::string &device_path);
@@ -55,14 +55,4 @@ Java_com_ok1iak_qmxserver_NativeBridge_stopStreaming(
 
     if (!g_run.exchange(false)) return;
     if (g_thread.joinable()) g_thread.join();
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_ok1iak_qmxserver_MainActivity_stringFromJNI(
-        JNIEnv* env,
-        jobject /* this */) {
-    std::string hello = "Hello from C++";
-    libusb_context *context = 0;
-    int rc = libusb_init(&context);
-    return env->NewStringUTF(hello.c_str());
 }

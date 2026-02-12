@@ -2,6 +2,7 @@ package com.ok1iak.qmxserver
 
 import android.Manifest
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.Context
@@ -22,6 +23,10 @@ import java.net.NetworkInterface
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+    private var isActivityVisible = false
+    private var pendingUsbDevice: UsbDevice? = null
+    private var permissionReceiver: UsbPermissionReceiver? = null
+    private var serviceStoppedReceiver: BroadcastReceiver? = null
 
     companion object {
         const val ACTION_USB_PERMISSION = "com.ok1iak.qmxserver.USB_PERMISSION"
@@ -33,10 +38,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Returns an IP address of the first active network interface, or "Not connected" string.
     private fun getLocalIpAddress(): String {
         return try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "Not connected"
-            
+
             val allAddresses = interfaces.toList()
                 .flatMap { iface ->
                     Log.d("QMXServer", "Interface: ${iface.name}, up=${iface.isUp}")
@@ -77,10 +83,7 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
-        
-        // Example of a call to a native method
-        binding.sampleText.text = stringFromJNI()
-
+    
         // Display local IP address
         val ipAddress = getLocalIpAddress()
         binding.ipText.text = "IP: $ipAddress"
@@ -94,6 +97,7 @@ class MainActivity : AppCompatActivity() {
             @Suppress("DEPRECATION")
             intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE)
         }
+        //FIXME do a search through the usbManager.deviceList.values, search for QMX/QDX devices.
         val device = attachedDevice ?: usbManager.deviceList.values.firstOrNull()
 
         if (device == null) {
@@ -105,45 +109,78 @@ class MainActivity : AppCompatActivity() {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         val permissionIntent = PendingIntent.getBroadcast(this, 0, Intent(ACTION_USB_PERMISSION), flags)
 
+        // Set up callback for USB permission result
+        UsbPermissionReceiver.onPermissionResult = { resultDevice, granted ->
+            Log.d("QMXServer", "Permission callback: granted=$granted, visible=$isActivityVisible")
+            if (granted && isActivityVisible) {
+                // Only start service if activity is still visible
+                startUsbService(resultDevice)
+            } else if (granted) {
+                // Store device for when user returns to the app
+                pendingUsbDevice = resultDevice
+                binding.startButton.isEnabled = true
+                binding.startButton.text = "Start"
+            }
+        }
+
         // Register receiver dynamically (keeps manifest simpler for modern Android)
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
-            // Android 13+
-            registerReceiver(
-                UsbPermissionReceiver(),
-                IntentFilter(ACTION_USB_PERMISSION),
-                Context.RECEIVER_NOT_EXPORTED  // Add this flag
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(
-                UsbPermissionReceiver(),
-                IntentFilter(ACTION_USB_PERMISSION)
-            )
+        permissionReceiver = UsbPermissionReceiver().also { receiver ->
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                // Android 13+
+                registerReceiver(
+                    receiver,
+                    IntentFilter(ACTION_USB_PERMISSION),
+                    Context.RECEIVER_NOT_EXPORTED
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(
+                    receiver,
+                    IntentFilter(ACTION_USB_PERMISSION)
+                )
+            }
+        }
+
+        // Register a receiver to learn when the service stops itself (e.g. USB detach)
+        serviceStoppedReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == UsbForegroundService.ACTION_SERVICE_STOPPED) {
+                    binding.startButton.isEnabled = true
+                    binding.startButton.text = "Start"
+                    binding.stopButton.isEnabled = false
+                }
+            }
+        }.also { receiver ->
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(
+                    receiver,
+                    IntentFilter(UsbForegroundService.ACTION_SERVICE_STOPPED),
+                    Context.RECEIVER_NOT_EXPORTED
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(
+                    receiver,
+                    IntentFilter(UsbForegroundService.ACTION_SERVICE_STOPPED)
+                )
+            }
         }
 
         // Setup button listeners
         binding.startButton.setOnClickListener {
-            if (usbManager.hasPermission(device)) {
-                val serviceIntent = Intent(this, UsbForegroundService::class.java).apply {
-                    putExtra(UsbManager.EXTRA_DEVICE, device)
-                }
-                // Use startForegroundService() on Android 8+ (API 26+)
-                if (Build.VERSION.SDK_INT >= 26) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    @Suppress("DEPRECATION")
-                    startService(serviceIntent)
-                }
-                binding.startButton.isEnabled = false
-                binding.stopButton.isEnabled = true
+            val deviceToUse = pendingUsbDevice ?: device
+            if (usbManager.hasPermission(deviceToUse)) {
+                startUsbService(deviceToUse)
             } else {
-                usbManager.requestPermission(device, permissionIntent)
+                usbManager.requestPermission(deviceToUse, permissionIntent)
+                binding.startButton.text = "Waiting for permission..."
             }
         }
 
         binding.stopButton.setOnClickListener {
             stopService(Intent(this, UsbForegroundService::class.java))
             binding.startButton.isEnabled = true
+            binding.startButton.text = "Start"
             binding.stopButton.isEnabled = false
         }
 
@@ -151,9 +188,61 @@ class MainActivity : AppCompatActivity() {
         binding.stopButton.isEnabled = false
     }
 
-        /**
-     * A native method that is implemented by the 'qmxserver' native library,
-     * which is packaged with this application.
-     */
-    external fun stringFromJNI(): String
+    override fun onStart() {
+        super.onStart()
+        isActivityVisible = true
+        
+        // If permission was granted while app was in background, enable start button
+        pendingUsbDevice?.let { device ->
+            val usbManager = getSystemService(UsbManager::class.java)
+            if (usbManager.hasPermission(device)) {
+                binding.startButton.isEnabled = true
+                binding.startButton.text = "Start"
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        isActivityVisible = false
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        permissionReceiver?.let { receiver ->
+            try {
+                unregisterReceiver(receiver)
+            } catch (_: IllegalArgumentException) {
+                // Receiver was not registered or already unregistered.
+            }
+        }
+        permissionReceiver = null
+        serviceStoppedReceiver?.let { receiver ->
+            try {
+                unregisterReceiver(receiver)
+            } catch (_: IllegalArgumentException) {
+                // Receiver was not registered or already unregistered.
+            }
+        }
+        serviceStoppedReceiver = null
+        // Clean up callback to prevent memory leak
+        UsbPermissionReceiver.onPermissionResult = null
+    }
+    
+    private fun startUsbService(device: UsbDevice) {
+        val serviceIntent = Intent(this, UsbForegroundService::class.java).apply {
+            putExtra(UsbManager.EXTRA_DEVICE, device)
+        }
+        // Use startForegroundService() on Android 8+ (API 26+)
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(serviceIntent)
+        } else {
+            @Suppress("DEPRECATION")
+            startService(serviceIntent)
+        }
+        binding.startButton.isEnabled = false
+        binding.startButton.text = "Start"
+        binding.stopButton.isEnabled = true
+        pendingUsbDevice = null // Clear pending device after starting
+    }
 }

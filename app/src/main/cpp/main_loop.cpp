@@ -3,6 +3,7 @@
 #include <assert.h>
 
 #include <string>
+#include <atomic>
 #include <vector>
 
 #ifdef _WIN32
@@ -16,6 +17,8 @@
 
 #include "cat.h"
 
+extern std::atomic<bool> g_run;
+
 #define LOGD(S, ...) fprintf(stderr, (S), ##__VA_ARGS__)
 
 /* The first PCM stereo AudioStreaming endpoint. */
@@ -27,11 +30,14 @@
 	#define IFACE_NUM 3
 #endif
 
-//#define NUM_TRANSFERS 20 //10
-#define NUM_TRANSFERS 5
-//#define PACKET_SIZE (48*3*2)
-#define PACKET_SIZE 300
-#define NUM_PACKETS 20 // 10
+// Number of libusub isochronous callback transfers in flight.
+//#define NUM_ISO_TRANSFERS 20 //10
+#define NUM_ISO_TRANSFERS 5
+// Size of an isochronous packet.
+//#define ISO_PACKET_SIZE (48*3*2)
+#define ISO_PACKET_SIZE 300
+// Number of isochronous packets per libusb callback.
+#define NUM_ISO_PACKETS 20 // 10
 
 //static int ipacket = 0;
 
@@ -48,165 +54,173 @@ struct Client
 // 5.3ms latency
 #define EXT_BLOCKLEN (512)
 
-    int receive_callback(int cnt, int status, float IQoffs, void* IQdata)
-    {
-        // 1) Push audio data to the clients.
-        assert(cnt == -1 || cnt == 0 || cnt == EXT_BLOCKLEN);
-        if (cnt == EXT_BLOCKLEN) {
-            // Send a big 
-            enet_host_broadcast(g_server, 0, enet_packet_create(IQdata, cnt * 2 * 2, 0));
-        }
-        return 0;
-    }
+int receive_callback(int cnt, int status, float IQoffs, void* IQdata)
+{
+	// 1) Push audio data to the clients.
+	assert(cnt == -1 || cnt == 0 || cnt == EXT_BLOCKLEN);
+	if (cnt == EXT_BLOCKLEN) {
+		// Send a big 
+		enet_host_broadcast(g_server, 0, enet_packet_create(IQdata, cnt * 2 * 2, 0));
+	}
+	return 0;
+}
 
 void pump_enet_packets()
 {
-        // 2) Pump the UDP packets.
-        for (;;) {
-            ENetEvent event;
-            int eventStatus = enet_host_service(g_server, &event, 0);
-            if (eventStatus <= 0)
-                break;
-            switch (event.type) {
-            case ENET_EVENT_TYPE_CONNECT:
-                event.peer->data = new Client;
-                {
-                    char buf[2048];
-                    if (! enet_address_get_host(&event.peer->address, buf, 2048)) {
-                        auto ip = event.peer->address.host;
-                        sprintf(buf, "%u.%u.%u.%u", ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
-                    }
-                    static_cast<Client*>(event.peer->data)->name = std::string(buf) + ":" + std::to_string(event.peer->address.port);
-                }
-                printf("(Server) We got a new connection from %x\n", event.peer->address.host);
-                break;
-            case ENET_EVENT_TYPE_RECEIVE:
-                // Decode CatCommand
-                if (event.channelID == 1 && event.packet->dataLength > 2) {
-                    CatCommandID cmd;
-                    memcpy(&cmd, event.packet->data, 2);
-                    switch (cmd) {
-                    case CatCommandID::SetFreq:
-                        if (event.packet->dataLength == 10) {
-                            int64_t frequency;
-                            memcpy(&frequency, event.packet->data + 2, 8);
-                            if (g_Cat.set_freq(frequency))
-				    printf("set frequency succeeded\n");
-			    else
-				    printf("set frequency failed\n");
-                        }
-                        break;
-                    case CatCommandID::SetCWTxFreq:
-                        if (event.packet->dataLength == 10) {
-                            int64_t frequency;
-                            memcpy(&frequency, event.packet->data + 2, 8);
-                            g_Cat.set_cw_tx_freq(frequency);
-                        }
-                        break;
-                    case CatCommandID::SetCWKeyerSpeed:
-                        if (event.packet->dataLength == 3) {
-                            uint8_t cw_speed;
-                            memcpy(&cw_speed, event.packet->data + 2, 1);
-                            g_Cat.set_cw_keyer_speed(cw_speed);
-                        }
-                        break;
-                    case CatCommandID::SetKeyerMode:
-                        if (event.packet->dataLength == 3) {
-                            uint8_t keyer_mode;
-                            memcpy(&keyer_mode, event.packet->data + 2, 1);
-                            g_Cat.set_cw_keyer_mode(KeyerMode(keyer_mode));
-                        }
-                        break;
-                    case CatCommandID::SetAMPControl:
-                        if (event.packet->dataLength == 10) {
-                            bool    enabled;
-                            int32_t delay, hang;
-                            memcpy(&enabled, event.packet->data + 2, 1);
-                            memcpy(&delay,   event.packet->data + 3, 4);
-                            memcpy(&hang,    event.packet->data + 7, 4);
-                            g_Cat.set_amp_control(enabled, delay, hang);
-                        }
-                        break;
-                    case CatCommandID::SetIQBalanceAndPower:
-                        if (event.packet->dataLength == 26) {
-                            double phase_balance_deg, amplitude_balance, power;
-                            memcpy(&phase_balance_deg,  event.packet->data + 2,  8);
-                            memcpy(&amplitude_balance,  event.packet->data + 10, 8);
-                            memcpy(&power,              event.packet->data + 18, 8);
-                            g_Cat.setIQBalanceAndPower(phase_balance_deg, amplitude_balance, power);
-                        }
-                        break;
-                    }
-                }
-                enet_packet_destroy(event.packet);
-                break;
-            case ENET_EVENT_TYPE_DISCONNECT:
-                printf("%s disconnected.\n", static_cast<const Client*>(event.peer->data)->name.c_str());
-                // Reset client's information.
-                delete static_cast<const Client*>(event.peer->data);
-                event.peer->data = nullptr;
-                break;
-            }
-        }
+	// 2) Pump the UDP packets.
+	for (;;) {
+		ENetEvent event;
+		int eventStatus = enet_host_service(g_server, &event, 0);
+		if (eventStatus <= 0)
+			break;
+		switch (event.type) {
+		case ENET_EVENT_TYPE_CONNECT:
+			event.peer->data = new Client;
+			{
+				char buf[2048];
+				if (enet_address_get_host(&event.peer->address, buf, 2048) == 0) {
+					auto ip = event.peer->address.host;
+					sprintf(buf, "%u.%u.%u.%u", ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
+				}
+				static_cast<Client*>(event.peer->data)->name = std::string(buf) + ":" + std::to_string(event.peer->address.port);
+			}
+			printf("(Server) We got a new connection from %x\n", event.peer->address.host);
+			break;
+		case ENET_EVENT_TYPE_RECEIVE:
+			// Decode CatCommand
+			if (event.channelID == 1 && event.packet->dataLength > 2) {
+				CatCommandID cmd;
+				memcpy(&cmd, event.packet->data, 2);
+				switch (cmd) {
+				case CatCommandID::SetFreq:
+					if (event.packet->dataLength == 10) {
+						int64_t frequency;
+						memcpy(&frequency, event.packet->data + 2, 8);
+						if (g_Cat.set_freq(frequency))
+				printf("set frequency succeeded\n");
+			else
+				printf("set frequency failed\n");
+					}
+					break;
+				case CatCommandID::SetCWTxFreq:
+					if (event.packet->dataLength == 10) {
+						int64_t frequency;
+						memcpy(&frequency, event.packet->data + 2, 8);
+						g_Cat.set_cw_tx_freq(frequency);
+					}
+					break;
+				case CatCommandID::SetCWKeyerSpeed:
+					if (event.packet->dataLength == 3) {
+						uint8_t cw_speed;
+						memcpy(&cw_speed, event.packet->data + 2, 1);
+						g_Cat.set_cw_keyer_speed(cw_speed);
+					}
+					break;
+				case CatCommandID::SetKeyerMode:
+					if (event.packet->dataLength == 3) {
+						uint8_t keyer_mode;
+						memcpy(&keyer_mode, event.packet->data + 2, 1);
+						g_Cat.set_cw_keyer_mode(KeyerMode(keyer_mode));
+					}
+					break;
+				case CatCommandID::SetAMPControl:
+					if (event.packet->dataLength == 11) {
+						bool    enabled;
+						int32_t delay, hang;
+						memcpy(&enabled, event.packet->data + 2, 1);
+						memcpy(&delay,   event.packet->data + 3, 4);
+						memcpy(&hang,    event.packet->data + 7, 4);
+						g_Cat.set_amp_control(enabled, delay, hang);
+					}
+					break;
+				case CatCommandID::SetIQBalanceAndPower:
+					if (event.packet->dataLength == 26) {
+						double phase_balance_deg, amplitude_balance, power;
+						memcpy(&phase_balance_deg,  event.packet->data + 2,  8);
+						memcpy(&amplitude_balance,  event.packet->data + 10, 8);
+						memcpy(&power,              event.packet->data + 18, 8);
+						g_Cat.setIQBalanceAndPower(phase_balance_deg, amplitude_balance, power);
+					}
+					break;
+				}
+			}
+			enet_packet_destroy(event.packet);
+			break;
+		case ENET_EVENT_TYPE_DISCONNECT:
+			printf("%s disconnected.\n", static_cast<const Client*>(event.peer->data)->name.c_str());
+			// Reset client's information.
+			delete static_cast<const Client*>(event.peer->data);
+			event.peer->data = nullptr;
+			break;
+        default: // nothing
+		}
+	}
 }
 
-static uint8_t data_buffer[EXT_BLOCKLEN * 2 * 2];
-static int     data_buffer_len = 0;
+// Stereo 16-bit samples, interleaved I/Q, little-endian, LSB first
+static uint8_t g_data_buffer[EXT_BLOCKLEN * 2 * 2];
+static int     g_data_buffer_len = 0;
 
-static void cb_xfr(struct libusb_transfer *xfr)
+static void libusb_transfer_callback(struct libusb_transfer *xfr)
 {
+	if (xfr->status != LIBUSB_TRANSFER_COMPLETED) {
+		LOGD("Transfer not completed (status %d: %s), stopping.\n", xfr->status, libusb_error_name(xfr->status));
+		g_run.store(false);
+		return; // do not resubmit
+	}
+
 	for (int ipacket = 0; ipacket < xfr->num_iso_packets; ++ ipacket) {
 		struct libusb_iso_packet_descriptor *pack = &xfr->iso_packet_desc[ipacket];
 		if (pack->status != LIBUSB_TRANSFER_COMPLETED) {
-			LOGD("Error (status %d: %s) :", pack->status, libusb_error_name(pack->status));
-			exit(1);
+			LOGD("ISO packet error (status %d: %s), skipping\n", pack->status, libusb_error_name(pack->status));
+			continue;
 	    }
         if (pack->actual_length <= 0)
             continue;
 	    const uint8_t *data = libusb_get_iso_packet_buffer_simple(xfr, ipacket);
 #if 0
 		for (int len = pack->length;;) {
-			if (data_buffer_len + len >= EXT_BLOCKLEN * 2 * 2) {
-				int num_copy = EXT_BLOCKLEN * 2 * 2 - data_buffer_len;
-				memcpy(data_buffer + data_buffer_len, data, num_copy);
-				receive_callback(EXT_BLOCKLEN, 0, 0.f, (void*)data_buffer);
+			if (g_data_buffer_len + len >= EXT_BLOCKLEN * 2 * 2) {
+				int num_copy = EXT_BLOCKLEN * 2 * 2 - g_data_buffer_len;
+				memcpy(g_data_buffer + g_data_buffer_len, data, num_copy);
+				receive_callback(EXT_BLOCKLEN, 0, 0.f, (void*)g_data_buffer);
 				len -= num_copy;
 				data += num_copy;
-				data_buffer_len = 0;
+				g_data_buffer_len = 0;
 			} else {
-				memcpy(data_buffer + data_buffer_len, data, len);
-				data_buffer_len += len;
+				memcpy(g_data_buffer + g_data_buffer_len, data, len);
+				g_data_buffer_len += len;
 				break;
 			}
 		}
 #else
 		assert((pack->actual_length % 6) == 0);
 		for (int len = pack->actual_length / 6;;) {
-			if (data_buffer_len + len >= EXT_BLOCKLEN) {
-				int num_copy = EXT_BLOCKLEN - data_buffer_len;
+			if (g_data_buffer_len + len >= EXT_BLOCKLEN) {
+				int num_copy = EXT_BLOCKLEN - g_data_buffer_len;
 				for (int i = 0; i < num_copy; ++ i) {
-					int j = 4 * (data_buffer_len + i);
+					int j = 4 * (g_data_buffer_len + i);
 					data ++; // skip LSB
-					data_buffer[j + 2] = *data ++;
-					data_buffer[j + 3] = *data ++;
+					g_data_buffer[j + 2] = *data ++;
+					g_data_buffer[j + 3] = *data ++;
 					data ++; // skip LSB
-					data_buffer[j + 0] = *data ++;
-					data_buffer[j + 1] = *data ++;
+					g_data_buffer[j + 0] = *data ++;
+					g_data_buffer[j + 1] = *data ++;
 				}
-				receive_callback(EXT_BLOCKLEN, 0, 0.f, (void*)data_buffer);
+				receive_callback(EXT_BLOCKLEN, 0, 0.f, (void*)g_data_buffer);
 				len -= num_copy;
-				data_buffer_len = 0;
+				g_data_buffer_len = 0;
 			} else {
 				for (int i = 0; i < len; ++ i) {
-					int j = 4 * (data_buffer_len + i);
+					int j = 4 * (g_data_buffer_len + i);
 					data ++; // skip LSB
-					data_buffer[j + 2] = *data ++;
-					data_buffer[j + 3] = *data ++;
+					g_data_buffer[j + 2] = *data ++;
+					g_data_buffer[j + 3] = *data ++;
 					data ++; // skip LSB
-					data_buffer[j + 0] = *data ++;
-					data_buffer[j + 1] = *data ++;
+					g_data_buffer[j + 0] = *data ++;
+					g_data_buffer[j + 1] = *data ++;
 				}
-				data_buffer_len += len;
+				g_data_buffer_len += len;
 				break;
 			}
 		}
@@ -221,34 +235,35 @@ static void cb_xfr(struct libusb_transfer *xfr)
 	#endif
 	}
 
-	if (int err = libusb_submit_transfer(xfr); err < 0) {
-		LOGD("error re-submitting URB: %d\n", err);
-		exit(1);
+	if (g_run.load()) {
+		if (int err = libusb_submit_transfer(xfr); err < 0) {
+			LOGD("error re-submitting URB: %d\n", err);
+			g_run.store(false);
+		}
 	}
 }
 
-static int benchmark_in(libusb_device_handle *devh, uint8_t ep)
+static uint8_t 					g_transfer_bufs[NUM_ISO_TRANSFERS][ISO_PACKET_SIZE * NUM_ISO_PACKETS];
+static struct libusb_transfer  *g_xfr[NUM_ISO_TRANSFERS] = { nullptr };
+
+static bool prepare_libusb_isochronous_in_transfer(libusb_device_handle *devh, uint8_t ep)
 {
-	static uint8_t buf[PACKET_SIZE * NUM_PACKETS];
-	static struct libusb_transfer *xfr[NUM_TRANSFERS];
-	int num_iso_pack = NUM_PACKETS;
-	int i;
-    for (i=0; i<NUM_TRANSFERS; i++) {
-	    xfr[i] = libusb_alloc_transfer(num_iso_pack);
-	    if (!xfr[i]) {
-	            LOGD("Could not allocate transfer");
-       		    return -1;
+    for (int i = 0; i < NUM_ISO_TRANSFERS; ++ i) {
+	    g_xfr[i] = libusb_alloc_transfer(NUM_ISO_PACKETS);
+	    if (! g_xfr[i]) {
+	        LOGD("Could not allocate transfer");
+       		return false;
 	    }
-		libusb_fill_iso_transfer(xfr[i], devh, ep, buf, sizeof(buf), num_iso_pack, cb_xfr, NULL, 1000);
-		libusb_set_iso_packet_lengths(xfr[i], sizeof(buf)/num_iso_pack);
-		int r = libusb_submit_transfer(xfr[i]);
+		libusb_fill_iso_transfer(g_xfr[i], devh, ep, g_transfer_bufs[i], sizeof(g_transfer_bufs[i]), 
+			NUM_ISO_PACKETS, libusb_transfer_callback, NULL, 1000);
+		libusb_set_iso_packet_lengths(g_xfr[i], ISO_PACKET_SIZE);
+		int r = libusb_submit_transfer(g_xfr[i]);
 		if (r < 0) {
-			LOGD("error re-submitting URB: %d\n", r);
-			exit(1);
+			LOGD("error submitting URB %d: %d\n", i, r);
+			return false;
 		}
 	}
-	//gettimeofday(&tv_start, NULL);
-	return 1;
+	return true;
 }
 
 #define LIBUSB_ANDROID
@@ -363,14 +378,52 @@ int main_loop(int fd, const std::string &device_path)
 
 	g_Cat.init(dev_handle);
 
-	benchmark_in(dev_handle, EP_ISO_IN);
+	g_data_buffer_len = 0; // reset stale data from any previous session
 
-	for (;;) {
-		rc = libusb_handle_events(context);
-		if (rc != LIBUSB_SUCCESS)
-			break;
-		pump_enet_packets();
+	if (prepare_libusb_isochronous_in_transfer(dev_handle, EP_ISO_IN)) {
+		while (g_run.load()) {
+			struct timeval tv = { 0, 100000 }; // 100ms timeout so we recheck g_run
+			rc = libusb_handle_events_timeout_completed(context, &tv, nullptr);
+			if (rc != LIBUSB_SUCCESS && rc != LIBUSB_ERROR_TIMEOUT)
+				break;
+			pump_enet_packets();
+		}
+	} else
+		g_run.store(false);
+
+	// Cancel and free in-flight transfers
+	bool canceled = false;
+	for (int i = 0; i < NUM_ISO_TRANSFERS; ++ i)
+		if (g_xfr[i]) {
+			canceled = true;
+			libusb_cancel_transfer(g_xfr[i]);
+		}
+	// Let libusb process the cancellations
+	if (canceled) {
+		for (int i = 0; i < 50; ++ i) {
+			struct timeval tv = { 0, 50000 };
+			libusb_handle_events_timeout_completed(context, &tv, nullptr);
+		}
+		for (int i = 0; i < NUM_ISO_TRANSFERS; ++ i)
+			if (g_xfr[i]) {
+				libusb_free_transfer(g_xfr[i]);
+				g_xfr[i] = nullptr;
+			}
 	}
 
+	// Release claimed interfaces
+	for (int iface : { 0, 1, 2, 3, 4 })
+		libusb_release_interface(dev_handle, iface);
+
+	libusb_close(dev_handle);
+
+	// Tear down ENet
+	if (g_server) {
+		enet_host_destroy(g_server);
+		g_server = nullptr;
+	}
+	enet_deinitialize();
+
 	libusb_exit(context);
+	return 0;
 }

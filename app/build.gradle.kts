@@ -19,7 +19,21 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
+                // Add debug symbols for native crashes
+                arguments += listOf("-DANDROID_STL=c++_shared")
             }
+        }
+        ndk {
+            debugSymbolLevel = "FULL"
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(System.getenv("KEYSTORE_FILE") ?: "release.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS")
+            keyPassword = System.getenv("KEY_PASSWORD")
         }
     }
 
@@ -27,6 +41,11 @@ android {
         debug {
             isDebuggable = true
             isMinifyEnabled = false
+            isJniDebuggable = true
+            // Keep native debug symbols
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
         }
         release {
             isMinifyEnabled = false
@@ -34,6 +53,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Sign the release build if environment variables are set
+            if (System.getenv("KEYSTORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {

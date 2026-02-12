@@ -8,6 +8,10 @@ import android.hardware.usb.UsbDevice
 import android.os.Build
 
 class UsbPermissionReceiver : BroadcastReceiver() {
+    companion object {
+        var onPermissionResult: ((UsbDevice, Boolean) -> Unit)? = null
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != MainActivity.ACTION_USB_PERMISSION) return
 
@@ -19,17 +23,8 @@ class UsbPermissionReceiver : BroadcastReceiver() {
         }
         val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
 
-        if (device != null && granted) {
-            // Start foreground service now that we have access
-            val svc = Intent(context, UsbForegroundService::class.java).apply {
-                putExtra(UsbManager.EXTRA_DEVICE, device)
-            }
-            if (Build.VERSION.SDK_INT >= 26) {
-                context.startForegroundService(svc)
-            } else {
-                @Suppress("DEPRECATION")
-                context.startService(svc)
-            }
+        if (device != null) {
+            onPermissionResult?.invoke(device, granted)
         }
     }
 }
