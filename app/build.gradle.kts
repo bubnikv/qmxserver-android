@@ -74,10 +74,11 @@ android {
     }
 }
 
-androidComponents {
-    onVariants { variant ->
-        variant.outputs.forEach { output ->
-            output.outputFileName.set("qmxserver-${android.defaultConfig.versionName}-${variant.name}.apk")
+afterEvaluate {
+    android.applicationVariants.all {
+        outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            output.outputFileName = "qmxserver-${defaultConfig.versionName}-${name}.apk"
         }
     }
 }
