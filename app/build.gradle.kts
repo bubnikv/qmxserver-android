@@ -13,7 +13,7 @@ android {
         minSdk = 23
         targetSdk = 36
         versionCode = 1
-        versionName = "0.0.11"
+        versionName = "0.0.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
@@ -74,14 +74,8 @@ android {
     }
 }
 
-val android = extensions.getByType(com.android.build.gradle.internal.dsl.BaseAppModuleExtension::class.java)
-afterEvaluate {
-    android.applicationVariants.all {
-        outputs.all {
-            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = "qmxserver-${android.defaultConfig.versionName}-${name}.apk"
-        }
-    }
+base {
+    archivesName = "qmxserver-${android.defaultConfig.versionName}"
 }
 
 dependencies {
