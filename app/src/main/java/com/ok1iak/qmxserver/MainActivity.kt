@@ -17,6 +17,10 @@ import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.ok1iak.qmxserver.databinding.ActivityMainBinding
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import java.net.InetAddress
 import java.net.NetworkInterface
 
@@ -27,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingUsbDevice: UsbDevice? = null
     private var permissionReceiver: UsbPermissionReceiver? = null
     private var serviceStoppedReceiver: BroadcastReceiver? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     companion object {
         const val ACTION_USB_PERMISSION = "com.ok1iak.qmxserver.USB_PERMISSION"
@@ -84,9 +89,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
     
-        // Display local IP address
-        val ipAddress = getLocalIpAddress()
-        binding.ipText.text = "IP: $ipAddress"
+        // Display local IP address and register for updates
+        updateIpDisplay()
+        registerNetworkCallback()
 
         val usbManager = getSystemService(UsbManager::class.java)
 
@@ -225,10 +230,41 @@ class MainActivity : AppCompatActivity() {
             }
         }
         serviceStoppedReceiver = null
+        networkCallback?.let { cb ->
+            getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(cb)
+        }
+        networkCallback = null
         // Clean up callback to prevent memory leak
         UsbPermissionReceiver.onPermissionResult = null
     }
     
+    private fun updateIpDisplay() {
+        val ipAddress = getLocalIpAddress()
+        binding.ipText.text = "IP: $ipAddress"
+    }
+
+    private fun registerNetworkCallback() {
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                runOnUiThread { updateIpDisplay() }
+            }
+
+            override fun onLost(network: Network) {
+                runOnUiThread { updateIpDisplay() }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                runOnUiThread { updateIpDisplay() }
+            }
+        }.also { cb ->
+            connectivityManager.registerNetworkCallback(request, cb)
+        }
+    }
+
     private fun startUsbService(device: UsbDevice) {
         val serviceIntent = Intent(this, UsbForegroundService::class.java).apply {
             putExtra(UsbManager.EXTRA_DEVICE, device)
