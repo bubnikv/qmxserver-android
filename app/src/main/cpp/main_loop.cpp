@@ -201,11 +201,11 @@ static void libusb_transfer_callback(struct libusb_transfer *xfr)
 				for (int i = 0; i < num_copy; ++ i) {
 					int j = 4 * (g_data_buffer_len + i);
 					data ++; // skip LSB
-					g_data_buffer[j + 2] = *data ++;
-					g_data_buffer[j + 3] = *data ++;
+					g_data_buffer[j ++] = *data ++;
+					g_data_buffer[j ++] = *data ++;
 					data ++; // skip LSB
-					g_data_buffer[j + 0] = *data ++;
-					g_data_buffer[j + 1] = *data ++;
+					g_data_buffer[j ++] = *data ++;
+					g_data_buffer[j ++] = *data ++;
 				}
 				receive_callback(EXT_BLOCKLEN, 0, 0.f, (void*)g_data_buffer);
 				len -= num_copy;
@@ -214,11 +214,11 @@ static void libusb_transfer_callback(struct libusb_transfer *xfr)
 				for (int i = 0; i < len; ++ i) {
 					int j = 4 * (g_data_buffer_len + i);
 					data ++; // skip LSB
-					g_data_buffer[j + 2] = *data ++;
-					g_data_buffer[j + 3] = *data ++;
+					g_data_buffer[j ++] = *data ++;
+					g_data_buffer[j ++] = *data ++;
 					data ++; // skip LSB
-					g_data_buffer[j + 0] = *data ++;
-					g_data_buffer[j + 1] = *data ++;
+					g_data_buffer[j ++] = *data ++;
+					g_data_buffer[j ++] = *data ++;
 				}
 				g_data_buffer_len += len;
 				break;
