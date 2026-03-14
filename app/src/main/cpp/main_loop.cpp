@@ -79,13 +79,13 @@ void pump_enet_packets()
 			event.peer->data = new Client;
 			{
 				char buf[2048];
-				if (enet_address_get_host(&event.peer->address, buf, 2048) == 0)
-					enet_address_get_host_ip(&event.peer->address, buf, sizeof(buf));
+				if (enet_address_get_host_new(&event.peer->address, buf, 2048) == 0)
+					enet_address_get_host_ip_new(&event.peer->address, buf, sizeof(buf));
 				static_cast<Client*>(event.peer->data)->name = std::string(buf) + ":" + std::to_string(event.peer->address.port);
 			}
 			{
 				char ip_str[256];
-				enet_address_get_host_ip(&event.peer->address, ip_str, sizeof(ip_str));
+				enet_address_get_host_ip_new(&event.peer->address, ip_str, sizeof(ip_str));
 				printf("(Server) We got a new connection from %s\n", ip_str);
 			}
 			break;
