@@ -79,9 +79,8 @@ void pump_enet_packets()
 			event.peer->data = new Client;
 			{
 				char buf[2048];
-				if (enet_address_get_host(&event.peer->address, buf, 2048) != 0) {
+				if (enet_address_get_host(&event.peer->address, buf, 2048) == 0)
 					enet_address_get_host_ip(&event.peer->address, buf, sizeof(buf));
-				}
 				static_cast<Client*>(event.peer->data)->name = std::string(buf) + ":" + std::to_string(event.peer->address.port);
 			}
 			{
@@ -156,7 +155,7 @@ void pump_enet_packets()
 			delete static_cast<const Client*>(event.peer->data);
 			event.peer->data = nullptr;
 			break;
-        default: // nothing
+        default:
 			break;
 		}
 	}
