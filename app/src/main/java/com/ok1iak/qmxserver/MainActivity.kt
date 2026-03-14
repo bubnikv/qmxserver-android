@@ -21,6 +21,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.NetworkInterface
 
@@ -43,33 +44,79 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Returns an IP address of the first active network interface, or "Not connected" string.
-    private fun getLocalIpAddress(): String {
-        return try {
-            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "Not connected"
+    private data class AddressInfo(
+        val address: String,
+        val interfaceName: String,
+        val isIPv6: Boolean,
+        val scope: String,
+        val durability: String?
+    )
 
-            val allAddresses = interfaces.toList()
-                .flatMap { iface ->
-                    Log.d("QMXServer", "Interface: ${iface.name}, up=${iface.isUp}")
-                    iface.inetAddresses.toList()
+    // Reads /proc/net/if_inet6 to get kernel flags for each IPv6 address.
+    // Flag 0x01 = IFA_F_TEMPORARY, Flag 0x80 = IFA_F_PERMANENT
+    private fun getIPv6AddressFlags(): Map<String, Int> {
+        val flagsMap = mutableMapOf<String, Int>()
+        try {
+            val file = java.io.File("/proc/net/if_inet6")
+            if (!file.exists()) return flagsMap
+            file.forEachLine { line ->
+                val parts = line.trim().split("\\s+".toRegex())
+                if (parts.size >= 6) {
+                    val addrHex = parts[0]
+                    val flags = parts[4].toIntOrNull(16) ?: 0
+                    val formatted = addrHex.chunked(4).joinToString(":")
+                    try {
+                        val addr = InetAddress.getByName(formatted)
+                        val normalized = addr.hostAddress?.substringBefore('%')
+                        if (normalized != null) {
+                            flagsMap[normalized] = flags
+                        }
+                    } catch (_: Exception) {}
                 }
-            
-            Log.d("QMXServer", "Total addresses found: ${allAddresses.size}")
-            
-            val result = allAddresses
-                .firstOrNull { address ->
-                    val hostAddr = address.hostAddress ?: ""
-                    Log.d("QMXServer", "Address: $hostAddr, loopback=${address.isLoopbackAddress}")
-                    !address.isLoopbackAddress && !hostAddr.contains(":")
-                }
-                ?.hostAddress
-            
-            Log.d("QMXServer", "Selected IP: $result")
-            result ?: "Not connected"
+            }
         } catch (e: Exception) {
-            Log.e("QMXServer", "IP error", e)
-            "Error: ${e.message}"
+            Log.e("QMXServer", "Error reading /proc/net/if_inet6", e)
         }
+        return flagsMap
+    }
+
+    // Returns all non-loopback addresses from active network interfaces.
+    private fun getAllAddresses(): List<AddressInfo> {
+        val result = mutableListOf<AddressInfo>()
+        try {
+            val ipv6Flags = getIPv6AddressFlags()
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return emptyList()
+
+            for (iface in interfaces) {
+                if (!iface.isUp || iface.isLoopback) continue
+
+                for (addr in iface.inetAddresses) {
+                    if (addr.isLoopbackAddress) continue
+                    val hostAddr = addr.hostAddress ?: continue
+
+                    val isIPv6 = addr is Inet6Address
+                    val displayAddr = if (isIPv6) hostAddr.substringBefore('%') else hostAddr
+
+                    val scope = when {
+                        addr.isLinkLocalAddress -> "Link-Local"
+                        addr.isSiteLocalAddress -> "Private"
+                        isIPv6 && (addr.address[0].toInt() and 0xfe) == 0xfc -> "Private" // ULA fc00::/7
+                        else -> "Public"
+                    }
+
+                    val durability = if (isIPv6 && !addr.isLinkLocalAddress) {
+                        val flags = ipv6Flags[displayAddr] ?: 0
+                        if (flags and 0x01 != 0) "Temporary" else "Permanent"
+                    } else null
+
+                    result.add(AddressInfo(displayAddr, iface.name, isIPv6, scope, durability))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("QMXServer", "Error enumerating addresses", e)
+        }
+        // Sort: IPv4 first, then IPv6
+        return result.sortedBy { it.isIPv6 }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -239,8 +286,21 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun updateIpDisplay() {
-        val ipAddress = getLocalIpAddress()
-        binding.ipText.text = "IP: $ipAddress"
+        val addresses = getAllAddresses()
+        if (addresses.isEmpty()) {
+            binding.ipText.text = "Not connected"
+            return
+        }
+        binding.ipText.text = addresses.joinToString("\n") { info ->
+            val type = if (info.isIPv6) "IPv6" else "IPv4"
+            val tags = buildList {
+                add(type)
+                add(info.scope)
+                info.durability?.let { add(it) }
+                add(info.interfaceName)
+            }.joinToString(" \u00b7 ")
+            "${info.address}\n  $tags"
+        }
     }
 
     private fun registerNetworkCallback() {

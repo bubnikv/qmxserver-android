@@ -19,11 +19,15 @@
 
     <TextView
         android:id="@+id/ip_text"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="IP: Loading..."
-        android:textSize="14sp"
+        android:text="Loading addresses…"
+        android:textSize="13sp"
+        android:fontFamily="monospace"
+        android:lineSpacingExtra="2dp"
         android:layout_marginTop="16dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
         app:layout_constraintBottom_toTopOf="@+id/start_button"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
