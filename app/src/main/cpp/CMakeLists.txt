@@ -11,8 +11,7 @@ cmake_minimum_required(VERSION 3.22.1)
 # build script scope).
 project("qmxserver")
 
-ADD_SUBDIRECTORY(libusb)
-add_subdirectory(enet)
+add_subdirectory(libusb)
 
 # Creates and names a library, sets it as either STATIC
 # or SHARED, and provides the relative paths to its source code.
@@ -34,12 +33,10 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         cat.h
         main_loop.cpp)
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/enet/include)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libusb/libusb)
 
 target_link_libraries(${CMAKE_PROJECT_NAME}
         # List libraries link to the target library
         android
         log
-        libusb
-        enet)
+        libusb)

@@ -13,7 +13,8 @@
 #endif // _WIN32
 #include <libusb.h>
 
-#include <enet/enet.h>
+#define ENET_IMPLEMENTATION
+#include "enet/enet.h"
 
 #include "cat.h"
 
@@ -78,13 +79,16 @@ void pump_enet_packets()
 			event.peer->data = new Client;
 			{
 				char buf[2048];
-				if (enet_address_get_host(&event.peer->address, buf, 2048) == 0) {
-					auto ip = event.peer->address.host;
-					sprintf(buf, "%u.%u.%u.%u", ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
+				if (enet_address_get_host(&event.peer->address, buf, 2048) != 0) {
+					enet_address_get_host_ip(&event.peer->address, buf, sizeof(buf));
 				}
 				static_cast<Client*>(event.peer->data)->name = std::string(buf) + ":" + std::to_string(event.peer->address.port);
 			}
-			printf("(Server) We got a new connection from %x\n", event.peer->address.host);
+			{
+				char ip_str[256];
+				enet_address_get_host_ip(&event.peer->address, ip_str, sizeof(ip_str));
+				printf("(Server) We got a new connection from %s\n", ip_str);
+			}
 			break;
 		case ENET_EVENT_TYPE_RECEIVE:
 			// Decode CatCommand
@@ -153,6 +157,7 @@ void pump_enet_packets()
 			event.peer->data = nullptr;
 			break;
         default: // nothing
+			break;
 		}
 	}
 }
