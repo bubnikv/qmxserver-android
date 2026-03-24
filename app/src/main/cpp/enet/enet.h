@@ -5904,7 +5904,6 @@ static int enet_address_has_source(const ENetAddress *address) {
         struct sockaddr_in6 sin;
         int recvLength;
 #if ENET_ENABLE_IPV6_RECVPKTINFO && defined(IPV6_PKTINFO)
-        struct cmsghdr *controlMsg;
         union {
             struct cmsghdr header;
             char control[CMSG_SPACE(sizeof(struct in6_pktinfo))];
@@ -5953,6 +5952,7 @@ static int enet_address_has_source(const ENetAddress *address) {
 
 #if ENET_ENABLE_IPV6_RECVPKTINFO && defined(IPV6_PKTINFO)
         if (destinationAddress != NULL) {
+            struct cmsghdr *controlMsg;
             for (controlMsg = CMSG_FIRSTHDR(&msgHdr); controlMsg != NULL; controlMsg = CMSG_NXTHDR(&msgHdr, controlMsg)) {
                 if (controlMsg->cmsg_level == IPPROTO_IPV6 && controlMsg->cmsg_type == IPV6_PKTINFO) {
                     struct in6_pktinfo *packet = (struct in6_pktinfo *) CMSG_DATA(controlMsg);
@@ -6036,36 +6036,32 @@ static int enet_address_has_source(const ENetAddress *address) {
     static LPFN_WSASENDMSG enet_sendmsg_fn = NULL;
 
     static void enet_initialize_socket_msg_fns(void) {
-        SOCKET socket = socket(PF_INET6, SOCK_DGRAM, 0);
+        SOCKET socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
 
         if (socket != INVALID_SOCKET) {
             DWORD bytes = 0;
             GUID recvGuid = WSAID_WSARECVMSG;
             GUID sendGuid = WSAID_WSASENDMSG;
 
-            if (enet_recvmsg_fn == NULL) {
-                WSAIoctl(socket,
-                    SIO_GET_EXTENSION_FUNCTION_POINTER,
-                    &recvGuid,
-                    sizeof(recvGuid),
-                    &enet_recvmsg_fn,
-                    sizeof(enet_recvmsg_fn),
-                    &bytes,
-                    NULL,
-                    NULL);
-            }
+            WSAIoctl(socket,
+                SIO_GET_EXTENSION_FUNCTION_POINTER,
+                &recvGuid,
+                sizeof(recvGuid),
+                &enet_recvmsg_fn,
+                sizeof(enet_recvmsg_fn),
+                &bytes,
+                NULL,
+                NULL);
 
-            if (enet_sendmsg_fn == NULL) {
-                WSAIoctl(socket,
-                    SIO_GET_EXTENSION_FUNCTION_POINTER,
-                    &sendGuid,
-                    sizeof(sendGuid),
-                    &enet_sendmsg_fn,
-                    sizeof(enet_sendmsg_fn),
-                    &bytes,
-                    NULL,
-                    NULL);
-            }
+            WSAIoctl(socket,
+                SIO_GET_EXTENSION_FUNCTION_POINTER,
+                &sendGuid,
+                sizeof(sendGuid),
+                &enet_sendmsg_fn,
+                sizeof(enet_sendmsg_fn),
+                &bytes,
+                NULL,
+                NULL);
 
             closesocket(socket);
         }
@@ -6428,7 +6424,6 @@ static int enet_address_has_source(const ENetAddress *address) {
         if (enet_recvmsg_fn != NULL) {
             WSAMSG msgHdr = {0};
             char controlBuf[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))];
-            LPWSACMSGHDR controlMsg;
 
             msgHdr.name = address != NULL ? (LPSOCKADDR) &sin : NULL;
             msgHdr.namelen = address != NULL ? sizeof(struct sockaddr_in6) : 0;
@@ -6462,6 +6457,7 @@ static int enet_address_has_source(const ENetAddress *address) {
             }
 
             if (destinationAddress != NULL) {
+                LPWSACMSGHDR controlMsg;
                 for (controlMsg = WSA_CMSG_FIRSTHDR(&msgHdr); controlMsg != NULL; controlMsg = WSA_CMSG_NXTHDR(&msgHdr, controlMsg)) {
                     if (controlMsg->cmsg_level == IPPROTO_IPV6 && controlMsg->cmsg_type == IPV6_PKTINFO) {
                         IN6_PKTINFO *packet = (IN6_PKTINFO *) WSA_CMSG_DATA(controlMsg);
