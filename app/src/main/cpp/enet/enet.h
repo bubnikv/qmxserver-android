@@ -1099,6 +1099,19 @@ static void enet_address_set_any(ENetAddress *address) {
     address->sin6_scope_id = 0;
 }
 
+static int enet_address_is_v4_mapped(const ENetAddress *address) {
+    return address != NULL && IN6_IS_ADDR_V4MAPPED(&address->host);
+}
+
+static void enet_address_extract_v4(const ENetAddress *address, struct in_addr *out) {
+    memcpy(out, &address->host.s6_addr[12], sizeof(*out));
+}
+
+static void enet_address_set_v4(ENetAddress *address, const struct in_addr *in) {
+    address->host = enet_v4_anyaddr;
+    memcpy(&address->host.s6_addr[12], in, sizeof(*in));
+}
+
 #if ENET_ENABLE_IPV6_RECVPKTINFO
 static int enet_address_has_source(const ENetAddress *address) {
     return address != NULL && (!in6_equal(address->host, ENET_HOST_ANY) || address->sin6_scope_id != 0);
@@ -6043,25 +6056,25 @@ static int enet_address_has_source(const ENetAddress *address) {
             GUID recvGuid = WSAID_WSARECVMSG;
             GUID sendGuid = WSAID_WSASENDMSG;
 
-            WSAIoctl(socket,
-                SIO_GET_EXTENSION_FUNCTION_POINTER,
-                &recvGuid,
-                sizeof(recvGuid),
-                &enet_recvmsg_fn,
-                sizeof(enet_recvmsg_fn),
-                &bytes,
-                NULL,
-                NULL);
+                WSAIoctl(socket,
+                    SIO_GET_EXTENSION_FUNCTION_POINTER,
+                    &recvGuid,
+                    sizeof(recvGuid),
+                    &enet_recvmsg_fn,
+                    sizeof(enet_recvmsg_fn),
+                    &bytes,
+                    NULL,
+                    NULL);
 
-            WSAIoctl(socket,
-                SIO_GET_EXTENSION_FUNCTION_POINTER,
-                &sendGuid,
-                sizeof(sendGuid),
-                &enet_sendmsg_fn,
-                sizeof(enet_sendmsg_fn),
-                &bytes,
-                NULL,
-                NULL);
+                WSAIoctl(socket,
+                    SIO_GET_EXTENSION_FUNCTION_POINTER,
+                    &sendGuid,
+                    sizeof(sendGuid),
+                    &enet_sendmsg_fn,
+                    sizeof(enet_sendmsg_fn),
+                    &bytes,
+                    NULL,
+                    NULL);
 
             closesocket(socket);
         }
@@ -6257,14 +6270,24 @@ static int enet_address_has_source(const ENetAddress *address) {
 
 #if ENET_ENABLE_IPV6_RECVPKTINFO
             case ENET_SOCKOPT_IPV6_RECVPKTINFO:
+            {
+                int ipv6Result = 0;
+                int ipv4Result = 0;
 #ifdef IPV6_RECVPKTINFO
-                result = setsockopt(socket, IPPROTO_IPV6, IPV6_RECVPKTINFO, (char *)&value, sizeof(int));
+                ipv6Result = setsockopt(socket, IPPROTO_IPV6, IPV6_RECVPKTINFO, (char *)&value, sizeof(int));
 #elif defined(IPV6_PKTINFO)
-                result = setsockopt(socket, IPPROTO_IPV6, IPV6_PKTINFO, (char *)&value, sizeof(int));
+                ipv6Result = setsockopt(socket, IPPROTO_IPV6, IPV6_PKTINFO, (char *)&value, sizeof(int));
+#endif
+#ifdef IP_PKTINFO
+                ipv4Result = setsockopt(socket, IPPROTO_IP, IP_PKTINFO, (char *)&value, sizeof(int));
+#endif
+#if defined(IPV6_RECVPKTINFO) || defined(IPV6_PKTINFO)
+                result = (ipv6Result == SOCKET_ERROR && ipv4Result == SOCKET_ERROR) ? SOCKET_ERROR : 0;
 #else
-                result = 0;
+                result = ipv4Result;
 #endif
                 break;
+            }
 #endif
 
             case ENET_SOCKOPT_TTL:
@@ -6363,7 +6386,6 @@ static int enet_address_has_source(const ENetAddress *address) {
             WSAMSG msgHdr = {0};
             char controlBuf[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))];
             LPWSACMSGHDR controlMsg;
-            IN6_PKTINFO *packet;
 
             msgHdr.name = address != NULL ? (LPSOCKADDR) &sin : NULL;
             msgHdr.namelen = address != NULL ? sizeof(struct sockaddr_in6) : 0;
@@ -6373,15 +6395,37 @@ static int enet_address_has_source(const ENetAddress *address) {
             msgHdr.Control.len = sizeof(controlBuf);
 
             controlMsg = WSA_CMSG_FIRSTHDR(&msgHdr);
-            controlMsg->cmsg_level = IPPROTO_IPV6;
-            controlMsg->cmsg_type = IPV6_PKTINFO;
-            controlMsg->cmsg_len = WSA_CMSG_LEN(sizeof(*packet));
+            if (enet_address_is_v4_mapped(sourceAddress)) {
+#ifdef IP_PKTINFO
+                IN_PKTINFO *packet;
+                struct in_addr addr4;
 
-            packet = (IN6_PKTINFO *) WSA_CMSG_DATA(controlMsg);
-            memset(packet, 0, sizeof(*packet));
-            packet->ipi6_addr = sourceAddress->host;
-            packet->ipi6_ifindex = sourceAddress->sin6_scope_id;
-            msgHdr.Control.len = controlMsg->cmsg_len;
+                controlMsg->cmsg_level = IPPROTO_IP;
+                controlMsg->cmsg_type = IP_PKTINFO;
+                controlMsg->cmsg_len = WSA_CMSG_LEN(sizeof(*packet));
+
+                packet = (IN_PKTINFO *) WSA_CMSG_DATA(controlMsg);
+                memset(packet, 0, sizeof(*packet));
+                enet_address_extract_v4(sourceAddress, &addr4);
+                packet->ipi_addr = addr4;
+                packet->ipi_ifindex = sourceAddress->sin6_scope_id;
+                msgHdr.Control.len = controlMsg->cmsg_len;
+#else
+                return -1;
+#endif
+            } else {
+                IN6_PKTINFO *packet;
+
+                controlMsg->cmsg_level = IPPROTO_IPV6;
+                controlMsg->cmsg_type = IPV6_PKTINFO;
+                controlMsg->cmsg_len = WSA_CMSG_LEN(sizeof(*packet));
+
+                packet = (IN6_PKTINFO *) WSA_CMSG_DATA(controlMsg);
+                memset(packet, 0, sizeof(*packet));
+                packet->ipi6_addr = sourceAddress->host;
+                packet->ipi6_ifindex = sourceAddress->sin6_scope_id;
+                msgHdr.Control.len = controlMsg->cmsg_len;
+            }
 
             if (enet_sendmsg_fn(socket, &msgHdr, 0, &sentLength, NULL, NULL) == SOCKET_ERROR) {
                 return (WSAGetLastError() == WSAEWOULDBLOCK) ? 0 : -1;
@@ -6465,6 +6509,14 @@ static int enet_address_has_source(const ENetAddress *address) {
                         destinationAddress->sin6_scope_id = packet->ipi6_ifindex;
                         break;
                     }
+#ifdef IP_PKTINFO
+                    if (controlMsg->cmsg_level == IPPROTO_IP && controlMsg->cmsg_type == IP_PKTINFO) {
+                        IN_PKTINFO *packet = (IN_PKTINFO *) WSA_CMSG_DATA(controlMsg);
+                        enet_address_set_v4(destinationAddress, &packet->ipi_addr);
+                        destinationAddress->sin6_scope_id = packet->ipi_ifindex;
+                        break;
+                    }
+#endif
                 }
             }
 
