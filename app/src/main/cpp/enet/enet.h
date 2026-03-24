@@ -150,6 +150,11 @@
     #include <sys/types.h>
     #include <sys/ioctl.h>
     #include <sys/time.h>
+    #ifdef __APPLE__
+    #ifndef __APPLE_USE_RFC_3542
+    #define __APPLE_USE_RFC_3542
+    #endif
+    #endif
     #include <sys/socket.h>
     #include <poll.h>
     #include <arpa/inet.h>
@@ -5750,12 +5755,24 @@ static int enet_address_has_source(const ENetAddress *address) {
 
 #if ENET_ENABLE_IPV6_RECVPKTINFO
             case ENET_SOCKOPT_IPV6_RECVPKTINFO:
+            {
+                int ipv6Result = -1;
+                int ipv4Result = -1;
 #ifdef IPV6_RECVPKTINFO
-                result = setsockopt(socket, IPPROTO_IPV6, IPV6_RECVPKTINFO, (char *)&value, sizeof(int));
+                ipv6Result = setsockopt(socket, IPPROTO_IPV6, IPV6_RECVPKTINFO, (char *)&value, sizeof(int));
 #elif defined(IPV6_PKTINFO)
-                result = setsockopt(socket, IPPROTO_IPV6, IPV6_PKTINFO, (char *)&value, sizeof(int));
+                ipv6Result = setsockopt(socket, IPPROTO_IPV6, IPV6_PKTINFO, (char *)&value, sizeof(int));
+#endif
+#if defined(IP_PKTINFO) && defined(__linux__)
+                ipv4Result = setsockopt(socket, IPPROTO_IP, IP_PKTINFO, (char *)&value, sizeof(int));
+#endif
+#if defined(IPV6_RECVPKTINFO) || defined(IPV6_PKTINFO)
+                result = (ipv6Result == -1 && ipv4Result == -1) ? -1 : 0;
+#else
+                result = ipv4Result;
 #endif
                 break;
+            }
 #endif
 
             case ENET_SOCKOPT_TTL:
@@ -5844,43 +5861,91 @@ static int enet_address_has_source(const ENetAddress *address) {
 #endif
     ) {
         struct msghdr msgHdr;
-        struct sockaddr_in6 sin;
+        union {
+            struct sockaddr_in6 ipv6;
+            struct sockaddr_in ipv4;
+        } sin;
         int sentLength;
 #if ENET_ENABLE_IPV6_RECVPKTINFO && defined(IPV6_PKTINFO)
         struct cmsghdr *controlMsg;
-        char controlBuf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
-        struct in6_pktinfo *packet;
+        union {
+            struct cmsghdr header;
+            char ipv6[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+#if defined(IP_PKTINFO) && defined(__linux__)
+            char ipv4[CMSG_SPACE(sizeof(struct in_pktinfo))];
+#endif
+        } controlBuffer;
 #endif
 
         memset(&msgHdr, 0, sizeof(struct msghdr));
 
         if (address != NULL) {
-            memset(&sin, 0, sizeof(struct sockaddr_in6));
+            memset(&sin, 0, sizeof(sin));
 
-            sin.sin6_family     = AF_INET6;
-            sin.sin6_port       = ENET_HOST_TO_NET_16(address->port);
-            sin.sin6_addr       = address->host;
-            sin.sin6_scope_id   = address->sin6_scope_id;
+            if (enet_address_is_v4_mapped(address)) {
+                struct in_addr addr4;
 
-            msgHdr.msg_name    = &sin;
-            msgHdr.msg_namelen = sizeof(struct sockaddr_in6);
+                enet_address_extract_v4(address, &addr4);
+                sin.ipv4.sin_family = AF_INET;
+                sin.ipv4.sin_port = ENET_HOST_TO_NET_16(address->port);
+                sin.ipv4.sin_addr = addr4;
+
+                msgHdr.msg_name = &sin.ipv4;
+                msgHdr.msg_namelen = sizeof(struct sockaddr_in);
+            } else {
+                sin.ipv6.sin6_family   = AF_INET6;
+                sin.ipv6.sin6_port     = ENET_HOST_TO_NET_16(address->port);
+                sin.ipv6.sin6_addr     = address->host;
+                sin.ipv6.sin6_scope_id = address->sin6_scope_id;
+
+                msgHdr.msg_name = &sin.ipv6;
+                msgHdr.msg_namelen = sizeof(struct sockaddr_in6);
+            }
         }
 
 #if ENET_ENABLE_IPV6_RECVPKTINFO && defined(IPV6_PKTINFO)
         if (enet_address_has_source(sourceAddress)) {
-            msgHdr.msg_control = controlBuf;
-            msgHdr.msg_controllen = sizeof(controlBuf);
+#if !defined(IP_PKTINFO) || !defined(__linux__)
+            if (enet_address_is_v4_mapped(sourceAddress)) {
+                msgHdr.msg_control = NULL;
+                msgHdr.msg_controllen = 0;
+            } else
+#endif
+            {
+                msgHdr.msg_control = controlBuffer.ipv6;
+                msgHdr.msg_controllen = sizeof(controlBuffer);
 
-            controlMsg = CMSG_FIRSTHDR(&msgHdr);
-            controlMsg->cmsg_level = IPPROTO_IPV6;
-            controlMsg->cmsg_type = IPV6_PKTINFO;
-            controlMsg->cmsg_len = CMSG_LEN(sizeof(*packet));
+                controlMsg = CMSG_FIRSTHDR(&msgHdr);
+#if defined(IP_PKTINFO) && defined(__linux__)
+                if (enet_address_is_v4_mapped(sourceAddress)) {
+                    struct in_pktinfo *packet;
+                    struct in_addr addr4;
 
-            packet = (struct in6_pktinfo *) CMSG_DATA(controlMsg);
-            memset(packet, 0, sizeof(*packet));
-            packet->ipi6_addr = sourceAddress->host;
-            packet->ipi6_ifindex = sourceAddress->sin6_scope_id;
-            msgHdr.msg_controllen = controlMsg->cmsg_len;
+                    controlMsg->cmsg_level = IPPROTO_IP;
+                    controlMsg->cmsg_type = IP_PKTINFO;
+                    controlMsg->cmsg_len = CMSG_LEN(sizeof(*packet));
+
+                    packet = (struct in_pktinfo *) CMSG_DATA(controlMsg);
+                    memset(packet, 0, sizeof(*packet));
+                    enet_address_extract_v4(sourceAddress, &addr4);
+                    packet->ipi_spec_dst = addr4;
+                    packet->ipi_ifindex = sourceAddress->sin6_scope_id;
+                } else
+#endif
+                {
+                    struct in6_pktinfo *packet;
+
+                    controlMsg->cmsg_level = IPPROTO_IPV6;
+                    controlMsg->cmsg_type = IPV6_PKTINFO;
+                    controlMsg->cmsg_len = CMSG_LEN(sizeof(*packet));
+
+                    packet = (struct in6_pktinfo *) CMSG_DATA(controlMsg);
+                    memset(packet, 0, sizeof(*packet));
+                    packet->ipi6_addr = sourceAddress->host;
+                    packet->ipi6_ifindex = sourceAddress->sin6_scope_id;
+                }
+                msgHdr.msg_controllen = controlMsg->cmsg_len;
+            }
         }
 #elif ENET_ENABLE_IPV6_RECVPKTINFO
         ENET_UNUSED(sourceAddress);
@@ -5919,7 +5984,10 @@ static int enet_address_has_source(const ENetAddress *address) {
 #if ENET_ENABLE_IPV6_RECVPKTINFO && defined(IPV6_PKTINFO)
         union {
             struct cmsghdr header;
-            char control[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+            char ipv6[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+#if defined(IP_PKTINFO) && defined(__linux__)
+            char ipv4[CMSG_SPACE(sizeof(struct in_pktinfo))];
+#endif
         } controlBuffer;
 #endif
 
@@ -5934,8 +6002,8 @@ static int enet_address_has_source(const ENetAddress *address) {
         if (destinationAddress != NULL) {
             enet_address_set_any(destinationAddress);
 #if defined(IPV6_PKTINFO)
-            msgHdr.msg_control = controlBuffer.control;
-            msgHdr.msg_controllen = sizeof(controlBuffer.control);
+            msgHdr.msg_control = controlBuffer.ipv6;
+            msgHdr.msg_controllen = sizeof(controlBuffer);
 #endif
         }
 #endif
@@ -5973,6 +6041,14 @@ static int enet_address_has_source(const ENetAddress *address) {
                     destinationAddress->sin6_scope_id = packet->ipi6_ifindex;
                     break;
                 }
+#if defined(IP_PKTINFO) && defined(__linux__)
+                if (controlMsg->cmsg_level == IPPROTO_IP && controlMsg->cmsg_type == IP_PKTINFO) {
+                    struct in_pktinfo *packet = (struct in_pktinfo *) CMSG_DATA(controlMsg);
+                    enet_address_set_v4(destinationAddress, &packet->ipi_addr);
+                    destinationAddress->sin6_scope_id = packet->ipi_ifindex;
+                    break;
+                }
+#endif
             }
         }
 #endif
