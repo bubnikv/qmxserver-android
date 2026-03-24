@@ -6460,14 +6460,20 @@ static int enet_address_has_source(const ENetAddress *address) {
 #if ENET_ENABLE_IPV6_RECVPKTINFO
         if (enet_address_has_source(sourceAddress) && enet_sendmsg_fn != NULL) {
             WSAMSG msgHdr = {0};
-            char controlBuf[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))];
+            union {
+                char ipv6[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))];
+#ifdef IP_PKTINFO
+                char ipv4[WSA_CMSG_SPACE(sizeof(IN_PKTINFO))];
+#endif
+            } controlBuf;
             LPWSACMSGHDR controlMsg;
 
             msgHdr.name = address != NULL ? (LPSOCKADDR) &sin : NULL;
             msgHdr.namelen = address != NULL ? sizeof(struct sockaddr_in6) : 0;
             msgHdr.lpBuffers = (LPWSABUF) buffers;
             msgHdr.dwBufferCount = (DWORD) bufferCount;
-            msgHdr.Control.buf = controlBuf;
+            memset(&controlBuf, 0, sizeof(controlBuf));
+            msgHdr.Control.buf = controlBuf.ipv6;
             msgHdr.Control.len = sizeof(controlBuf);
 
             controlMsg = WSA_CMSG_FIRSTHDR(&msgHdr);
@@ -6485,7 +6491,7 @@ static int enet_address_has_source(const ENetAddress *address) {
                 enet_address_extract_v4(sourceAddress, &addr4);
                 packet->ipi_addr = addr4;
                 packet->ipi_ifindex = sourceAddress->sin6_scope_id;
-                msgHdr.Control.len = controlMsg->cmsg_len;
+                msgHdr.Control.len = WSA_CMSG_SPACE(sizeof(*packet));
 #else
                 return -1;
 #endif
@@ -6500,7 +6506,7 @@ static int enet_address_has_source(const ENetAddress *address) {
                 memset(packet, 0, sizeof(*packet));
                 packet->ipi6_addr = sourceAddress->host;
                 packet->ipi6_ifindex = sourceAddress->sin6_scope_id;
-                msgHdr.Control.len = controlMsg->cmsg_len;
+                msgHdr.Control.len = WSA_CMSG_SPACE(sizeof(*packet));
             }
 
             if (enet_sendmsg_fn(socket, &msgHdr, 0, &sentLength, NULL, NULL) == SOCKET_ERROR) {
@@ -6543,13 +6549,19 @@ static int enet_address_has_source(const ENetAddress *address) {
 
         if (enet_recvmsg_fn != NULL) {
             WSAMSG msgHdr = {0};
-            char controlBuf[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))];
+            union {
+                char ipv6[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))];
+#ifdef IP_PKTINFO
+                char ipv4[WSA_CMSG_SPACE(sizeof(IN_PKTINFO))];
+#endif
+            } controlBuf;
 
             msgHdr.name = address != NULL ? (LPSOCKADDR) &sin : NULL;
             msgHdr.namelen = address != NULL ? sizeof(struct sockaddr_in6) : 0;
             msgHdr.lpBuffers = (LPWSABUF) buffers;
             msgHdr.dwBufferCount = (DWORD) bufferCount;
-            msgHdr.Control.buf = controlBuf;
+            memset(&controlBuf, 0, sizeof(controlBuf));
+            msgHdr.Control.buf = controlBuf.ipv6;
             msgHdr.Control.len = sizeof(controlBuf);
             msgHdr.dwFlags = 0;
 
